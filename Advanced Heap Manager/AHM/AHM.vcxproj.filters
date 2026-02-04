@@ -24,15 +24,21 @@
     <ClInclude Include="AdvancedHeapManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="HeapEntry.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="AllocationMap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="AHM.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="AdvancedHeapManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="AllocationMap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

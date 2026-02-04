@@ -46,3 +46,5 @@ namespace AHM
         bool TakeNoLock(void* ptr, uint32_t& heapIdOut);
     };
 }
+
+
