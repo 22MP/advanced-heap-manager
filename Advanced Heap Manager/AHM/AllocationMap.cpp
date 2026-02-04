@@ -1,14 +1,14 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "AllocationMap.h"
-#include <cstdlib>   
+#include <cstdlib>
 
 namespace AHM
 {
     AllocationMap::AllocationMap()
-        : _entries(nullptr),
-        _capacity(0),
-        _size(0),
-        _tombstones(0)
+        : _entries(nullptr)
+        , _capacity(0)
+        , _size(0)
+        , _tombstones(0)
     {
         InitializeSRWLock(&_lock);
     }
@@ -20,8 +20,6 @@ namespace AHM
 
     bool AllocationMap::Init(size_t initialCapacityPow2)
     {
-        // Stub step: only allocate/reset storage and validate input.
-
         if (!IsPowerOfTwo(initialCapacityPow2))
             return false;
 
@@ -38,13 +36,11 @@ namespace AHM
         _size = 0;
         _tombstones = 0;
 
-        // HEAP_ZERO_MEMORY already sets state=0 -> Empty
         return true;
     }
 
     void AllocationMap::Destroy()
     {
-        // Safe to call multiple times
         if (_entries)
         {
             HeapFree(GetProcessHeap(), 0, _entries);
@@ -58,29 +54,58 @@ namespace AHM
 
     bool AllocationMap::Put(void* ptr, uint32_t heapId)
     {
-        // Stub: thread-safe wrapper + placeholder return.
-        if (!ptr) return false;
+        if (!ptr)
+            return false;
+
+        const uint64_t hash = HashPtr(ptr);
 
         AcquireSRWLockExclusive(&_lock);
-        const bool ok = PutNoLock(ptr, heapId);
-        ReleaseSRWLockExclusive(&_lock);
 
+        if (!EnsureCapacityNoLock())
+        {
+            ReleaseSRWLockExclusive(&_lock);
+            return false;
+        }
+
+        const bool ok = PutNoLock(ptr, heapId, hash);
+
+        ReleaseSRWLockExclusive(&_lock);
         return ok;
     }
 
     bool AllocationMap::Take(void* ptr, uint32_t& heapIdOut)
     {
-        // Stub: thread-safe wrapper + placeholder return.
-        if (!ptr) return false;
+        if (!ptr)
+            return false;
+
+        const uint64_t hash = HashPtr(ptr);
 
         AcquireSRWLockExclusive(&_lock);
-        const bool ok = TakeNoLock(ptr, heapIdOut);
-        ReleaseSRWLockExclusive(&_lock);
 
-        return ok;
+        size_t index = 0;
+        uint32_t heapId = 0;
+
+        const bool found = LookupNoLock(ptr, hash, index, heapId);
+        if (!found)
+        {
+            ReleaseSRWLockExclusive(&_lock);
+            return false;
+        }
+
+        RemoveAtNoLock(index);
+        heapIdOut = heapId;
+
+        // Tombstone cleanup rebuild (best-effort)
+        if (ShouldRebuildNoLock())
+        {
+            (void)RebuildSameCapacityNoLock();
+        }
+
+        ReleaseSRWLockExclusive(&_lock);
+        return true;
     }
 
-    // ---------------- Helpers (stubs for now) ----------------
+    // ---------------- Helpers ----------------
 
     bool AllocationMap::IsPowerOfTwo(size_t x)
     {
@@ -89,18 +114,11 @@ namespace AHM
 
     uint64_t AllocationMap::HashPtr(void* p)
     {
-
-        //convert ptr -> unsigned integer
         uintptr_t castedPtr = reinterpret_cast<uintptr_t>(p);
-
-        //drop low alignment bits that are usually zero
         castedPtr >>= 4;
 
-        //widen to 64-bit value for hashing
         uint64_t x = static_cast<uint64_t>(castedPtr);
 
-
-        //bit mixing to improve hash distribution (SplitMix64-style)
         x += 0x9E3779B97F4A7C15ULL;
         x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
         x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
@@ -111,19 +129,226 @@ namespace AHM
 
     bool AllocationMap::EnsureCapacityNoLock()
     {
-        // Stub: resizing will be implemented later
-        return (_entries != nullptr && _capacity != 0);
+        if (!_entries || _capacity == 0)
+            return false;
+
+        // Grow when (size + tombstones + 1) / capacity >= ~0.75
+        // Tombstones count too because they make probe chains longer.
+        const size_t needed = _size + _tombstones + 1;
+        const bool shouldGrow = (needed * 100) >= (_capacity * 75);
+
+        if (!shouldGrow)
+            return true;
+
+        const size_t newCap = _capacity * 2;
+        if (newCap < _capacity) // overflow
+            return false;
+
+        Entry* newEntries = static_cast<Entry*>(
+            HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, newCap * sizeof(Entry))
+            );
+        if (!newEntries)
+            return false;
+
+        const size_t newMask = newCap - 1;
+
+        // Rehash occupied entries into the new table (no tombstones carried over)
+        for (size_t i = 0; i < _capacity; ++i)
+        {
+            const Entry& oldE = _entries[i];
+            if (oldE.state != State::Occupied)
+                continue;
+
+            const uint64_t h = HashPtr(oldE.key);
+            const size_t start = static_cast<size_t>(h) & newMask;
+
+            for (size_t step = 0; step < newCap; ++step)
+            {
+                const size_t idx = (start + step) & newMask;
+                Entry& dst = newEntries[idx];
+
+                if (dst.state == State::Empty)
+                {
+                    dst.key = oldE.key;
+                    dst.value = oldE.value;
+                    dst.state = State::Occupied;
+                    break;
+                }
+            }
+        }
+
+        HeapFree(GetProcessHeap(), 0, _entries);
+        _entries = newEntries;
+        _capacity = newCap;
+        _tombstones = 0;
+        // _size unchanged
+
+        return true;
     }
 
-    bool AllocationMap::PutNoLock(void* /*ptr*/, uint32_t /*heapId*/)
+    bool AllocationMap::PutNoLock(void* ptr, uint32_t heapId, uint64_t hash)
     {
-        // Stub: always fail until implemented
+        if (!_entries || _capacity == 0)
+            return false;
+
+        const size_t mask = _capacity - 1;
+        const size_t start = static_cast<size_t>(hash) & mask;
+        size_t firstTomb = static_cast<size_t>(-1);
+
+        for (size_t step = 0; step < _capacity; ++step)
+        {
+            const size_t idx = (start + step) & mask;
+            Entry& e = _entries[idx];
+
+            if (e.state == State::Empty)
+            {
+                const size_t ins = (firstTomb != static_cast<size_t>(-1)) ? firstTomb : idx;
+                Entry& dst = _entries[ins];
+
+                dst.key = ptr;
+                dst.value = heapId;
+                dst.state = State::Occupied;
+
+                if (ins == firstTomb && _tombstones > 0)
+                    --_tombstones;
+
+                ++_size;
+                return true;
+            }
+
+            if (e.state == State::Tombstone)
+            {
+                if (firstTomb == static_cast<size_t>(-1))
+                    firstTomb = idx;
+                continue;
+            }
+
+            if (e.key == ptr)
+            {
+                e.value = heapId; // update
+                return true;
+            }
+        }
+
+        // No empty slot, but tombstone exists
+        if (firstTomb != static_cast<size_t>(-1))
+        {
+            Entry& dst = _entries[firstTomb];
+            dst.key = ptr;
+            dst.value = heapId;
+            dst.state = State::Occupied;
+
+            if (_tombstones > 0)
+                --_tombstones;
+
+            ++_size;
+            return true;
+        }
+
         return false;
     }
 
-    bool AllocationMap::TakeNoLock(void* /*ptr*/, uint32_t& /*heapIdOut*/)
+    bool AllocationMap::LookupNoLock(void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut)
     {
-        // Stub: always fail until implemented
+        if (!ptr || !_entries || _capacity == 0)
+            return false;
+
+        const size_t mask = _capacity - 1;
+        const size_t start = static_cast<size_t>(hash) & mask;
+
+        for (size_t step = 0; step < _capacity; ++step)
+        {
+            const size_t idx = (start + step) & mask;
+            Entry& e = _entries[idx];
+
+            if (e.state == State::Empty)
+                return false;
+
+            if (e.state == State::Occupied && e.key == ptr)
+            {
+                indexOut = idx;
+                heapIdOut = e.value;
+                return true;
+            }
+        }
+
         return false;
+    }
+
+    void AllocationMap::RemoveAtNoLock(size_t index)
+    {
+        Entry& e = _entries[index];
+
+        e.key = nullptr;
+        e.value = 0;
+        e.state = State::Tombstone;
+
+        if (_size > 0)
+            --_size;
+
+        ++_tombstones;
+    }
+
+    bool AllocationMap::ShouldRebuildNoLock() const
+    {
+        if (_capacity == 0)
+            return false;
+
+        // Rebuild if tombstones are a significant fraction, or more than live entries.
+        if ((_tombstones * 100) >= (_capacity * 25))
+            return true;
+
+        if (_tombstones > _size)
+            return true;
+
+        return false;
+    }
+
+    bool AllocationMap::RebuildSameCapacityNoLock()
+    {
+        if (!_entries || _capacity == 0)
+            return false;
+
+        const size_t newCap = _capacity;
+
+        Entry* newEntries = static_cast<Entry*>(
+            HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, newCap * sizeof(Entry))
+            );
+        if (!newEntries)
+            return false;
+
+        const size_t newMask = newCap - 1;
+
+        for (size_t i = 0; i < _capacity; ++i)
+        {
+            const Entry& oldE = _entries[i];
+            if (oldE.state != State::Occupied)
+                continue;
+
+            const uint64_t h = HashPtr(oldE.key);
+            const size_t start = static_cast<size_t>(h) & newMask;
+
+            for (size_t step = 0; step < newCap; ++step)
+            {
+                const size_t idx = (start + step) & newMask;
+                Entry& dst = newEntries[idx];
+
+                if (dst.state == State::Empty)
+                {
+                    dst.key = oldE.key;
+                    dst.value = oldE.value;
+                    dst.state = State::Occupied;
+                    break;
+                }
+            }
+        }
+
+        HeapFree(GetProcessHeap(), 0, _entries);
+        _entries = newEntries;
+
+        // Capacity unchanged, live entries count unchanged
+        _tombstones = 0;
+
+        return true;
     }
 }

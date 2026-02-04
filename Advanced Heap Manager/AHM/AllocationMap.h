@@ -42,8 +42,13 @@ namespace AHM
         static uint64_t HashPtr(void* p);
 
         bool EnsureCapacityNoLock();
-        bool PutNoLock(void* ptr, uint32_t heapId);
-        bool TakeNoLock(void* ptr, uint32_t& heapIdOut);
+        bool PutNoLock(void* ptr, uint32_t heapId, uint64_t hash);
+        bool TakeNoLock(void* ptr, uint32_t& heapIdOut, uint64_t hash);
+        bool LookupNoLock(void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut);
+        void RemoveAtNoLock(size_t index);
+
+        bool ShouldRebuildNoLock() const;
+        bool RebuildSameCapacityNoLock();
     };
 }
 
