@@ -36,6 +36,7 @@ namespace AHM
         _size = 0;
         _tombstones = 0;
 
+        // HEAP_ZERO_MEMORY => state==0 => State::Empty
         return true;
     }
 
@@ -57,6 +58,7 @@ namespace AHM
         if (!ptr)
             return false;
 
+        // Non-critical work outside lock
         const uint64_t hash = HashPtr(ptr);
 
         AcquireSRWLockExclusive(&_lock);
@@ -78,6 +80,7 @@ namespace AHM
         if (!ptr)
             return false;
 
+        // Non-critical work outside lock
         const uint64_t hash = HashPtr(ptr);
 
         AcquireSRWLockExclusive(&_lock);
@@ -85,8 +88,7 @@ namespace AHM
         size_t index = 0;
         uint32_t heapId = 0;
 
-        const bool found = LookupNoLock(ptr, hash, index, heapId);
-        if (!found)
+        if (!LookupNoLock(ptr, hash, index, heapId))
         {
             ReleaseSRWLockExclusive(&_lock);
             return false;
@@ -115,10 +117,11 @@ namespace AHM
     uint64_t AllocationMap::HashPtr(void* p)
     {
         uintptr_t castedPtr = reinterpret_cast<uintptr_t>(p);
-        castedPtr >>= 4;
+        castedPtr >>= 4; // drop low alignment bits
 
         uint64_t x = static_cast<uint64_t>(castedPtr);
 
+        // SplitMix64-style mixing
         x += 0x9E3779B97F4A7C15ULL;
         x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
         x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
@@ -132,10 +135,10 @@ namespace AHM
         if (!_entries || _capacity == 0)
             return false;
 
-        // Grow when (size + tombstones + 1) / capacity >= ~0.75
-        // Tombstones count too because they make probe chains longer.
+        // Grow when (size + tombstones + 1) / capacity >= ~0.70
+        // (Counts tombstones because they lengthen probes under churn.)
         const size_t needed = _size + _tombstones + 1;
-        const bool shouldGrow = (needed * 100) >= (_capacity * 75);
+        const bool shouldGrow = (needed * 100) >= (_capacity * 70);
 
         if (!shouldGrow)
             return true;
@@ -152,14 +155,14 @@ namespace AHM
 
         const size_t newMask = newCap - 1;
 
-        // Rehash occupied entries into the new table (no tombstones carried over)
+        // Rehash occupied entries into the new table (tombstones are dropped)
         for (size_t i = 0; i < _capacity; ++i)
         {
             const Entry& oldE = _entries[i];
             if (oldE.state != State::Occupied)
                 continue;
 
-            const uint64_t h = HashPtr(oldE.key);
+            const uint64_t h = oldE.hash; // USE STORED HASH
             const size_t start = static_cast<size_t>(h) & newMask;
 
             for (size_t step = 0; step < newCap; ++step)
@@ -170,6 +173,7 @@ namespace AHM
                 if (dst.state == State::Empty)
                 {
                     dst.key = oldE.key;
+                    dst.hash = oldE.hash;
                     dst.value = oldE.value;
                     dst.state = State::Occupied;
                     break;
@@ -180,7 +184,7 @@ namespace AHM
         HeapFree(GetProcessHeap(), 0, _entries);
         _entries = newEntries;
         _capacity = newCap;
-        _tombstones = 0;
+        _tombstones = 0; // tombstones removed by rehash
         // _size unchanged
 
         return true;
@@ -193,6 +197,7 @@ namespace AHM
 
         const size_t mask = _capacity - 1;
         const size_t start = static_cast<size_t>(hash) & mask;
+
         size_t firstTomb = static_cast<size_t>(-1);
 
         for (size_t step = 0; step < _capacity; ++step)
@@ -206,6 +211,7 @@ namespace AHM
                 Entry& dst = _entries[ins];
 
                 dst.key = ptr;
+                dst.hash = hash;
                 dst.value = heapId;
                 dst.state = State::Occupied;
 
@@ -223,7 +229,8 @@ namespace AHM
                 continue;
             }
 
-            if (e.key == ptr)
+            // Occupied: quick reject by hash first, then key compare
+            if (e.hash == hash && e.key == ptr)
             {
                 e.value = heapId; // update
                 return true;
@@ -234,7 +241,9 @@ namespace AHM
         if (firstTomb != static_cast<size_t>(-1))
         {
             Entry& dst = _entries[firstTomb];
+
             dst.key = ptr;
+            dst.hash = hash;
             dst.value = heapId;
             dst.state = State::Occupied;
 
@@ -262,13 +271,16 @@ namespace AHM
             Entry& e = _entries[idx];
 
             if (e.state == State::Empty)
-                return false;
+                return false; // stop: key not present
 
-            if (e.state == State::Occupied && e.key == ptr)
+            if (e.state == State::Occupied)
             {
-                indexOut = idx;
-                heapIdOut = e.value;
-                return true;
+                if (e.hash == hash && e.key == ptr)
+                {
+                    indexOut = idx;
+                    heapIdOut = e.value;
+                    return true;
+                }
             }
         }
 
@@ -280,6 +292,7 @@ namespace AHM
         Entry& e = _entries[index];
 
         e.key = nullptr;
+        e.hash = 0;
         e.value = 0;
         e.state = State::Tombstone;
 
@@ -294,11 +307,18 @@ namespace AHM
         if (_capacity == 0)
             return false;
 
-        // Rebuild if tombstones are a significant fraction, or more than live entries.
+        // Rebuild if tombstones are a significant fraction, or more than live entries. Must be bigger that threshold.
+        if (_tombstones < 4096)
+            return false;
+
         if ((_tombstones * 100) >= (_capacity * 25))
             return true;
 
         if (_tombstones > _size)
+            return true;
+
+        const size_t unusable = _size + _tombstones;
+        if ((unusable * 100) >= (_capacity * 85))
             return true;
 
         return false;
@@ -325,7 +345,7 @@ namespace AHM
             if (oldE.state != State::Occupied)
                 continue;
 
-            const uint64_t h = HashPtr(oldE.key);
+            const uint64_t h = oldE.hash; // USE STORED HASH
             const size_t start = static_cast<size_t>(h) & newMask;
 
             for (size_t step = 0; step < newCap; ++step)
@@ -336,6 +356,7 @@ namespace AHM
                 if (dst.state == State::Empty)
                 {
                     dst.key = oldE.key;
+                    dst.hash = oldE.hash;
                     dst.value = oldE.value;
                     dst.state = State::Occupied;
                     break;
@@ -346,7 +367,7 @@ namespace AHM
         HeapFree(GetProcessHeap(), 0, _entries);
         _entries = newEntries;
 
-        // Capacity unchanged, live entries count unchanged
+        // Capacity unchanged, live entries unchanged
         _tombstones = 0;
 
         return true;

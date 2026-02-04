@@ -22,13 +22,14 @@ namespace AHM
         AllocationMap& operator=(const AllocationMap&) = delete;
 
     private:
-        enum class State : uint8_t { Empty, Occupied, Tombstone };
+        enum class State : uint8_t { Empty = 0, Occupied = 1, Tombstone = 2 };
 
         struct Entry
         {
-            void* key;
-            uint32_t value;
-            State    state;
+            void* key;     // pointer key
+            uint64_t hash;    // cached hash of key
+            uint32_t value;   // heapId
+            State    state;   // Empty/Occupied/Tombstone
         };
 
         SRWLOCK _lock;
@@ -41,9 +42,11 @@ namespace AHM
         static bool     IsPowerOfTwo(size_t x);
         static uint64_t HashPtr(void* p);
 
+        // Caller must hold exclusive lock:
         bool EnsureCapacityNoLock();
+
         bool PutNoLock(void* ptr, uint32_t heapId, uint64_t hash);
-        bool TakeNoLock(void* ptr, uint32_t& heapIdOut, uint64_t hash);
+
         bool LookupNoLock(void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut);
         void RemoveAtNoLock(size_t index);
 
@@ -51,5 +54,3 @@ namespace AHM
         bool RebuildSameCapacityNoLock();
     };
 }
-
-
