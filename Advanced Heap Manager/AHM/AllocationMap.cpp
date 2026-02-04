@@ -87,10 +87,26 @@ namespace AHM
         return x != 0 && ((x & (x - 1)) == 0);
     }
 
-    uint64_t AllocationMap::HashPtr(void* /*p*/)
+    uint64_t AllocationMap::HashPtr(void* p)
     {
-        // Stub: real mixing will be added later
-        return 0;
+
+        //convert ptr -> unsigned integer
+        uintptr_t castedPtr = reinterpret_cast<uintptr_t>(p);
+
+        //drop low alignment bits that are usually zero
+        castedPtr >>= 4;
+
+        //widen to 64-bit value for hashing
+        uint64_t x = static_cast<uint64_t>(castedPtr);
+
+
+        //bit mixing to improve hash distribution (SplitMix64-style)
+        x += 0x9E3779B97F4A7C15ULL;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+        x = x ^ (x >> 31);
+
+        return x;
     }
 
     bool AllocationMap::EnsureCapacityNoLock()
