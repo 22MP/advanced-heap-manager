@@ -122,7 +122,7 @@ namespace AHM
             InitializeSRWLock(&g_heaps[i].heapLock);
 
             // initial size = heapSizeBytes, max size = 0 (grow as needed)
-            g_heaps[i].heapHandle = HeapCreate(0, heapSizeBytes, 0);
+            g_heaps[i].heapHandle = HeapCreate(HEAP_NO_SERIALIZE, heapSizeBytes, 0);
 
             if (!g_heaps[i].heapHandle)
             {
