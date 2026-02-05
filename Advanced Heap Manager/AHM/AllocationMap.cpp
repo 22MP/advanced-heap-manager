@@ -1,16 +1,12 @@
 ﻿#include "pch.h"
 #include "AllocationMap.h"
-#include <cstdlib>
 
 namespace AHM
 {
     AllocationMap::AllocationMap()
-        : _entries(nullptr)
-        , _capacity(0)
-        , _size(0)
-        , _tombstones(0)
     {
-        InitializeSRWLock(&_lock);
+        for (size_t i = 0; i < kSegmentCount; ++i)
+            InitializeSRWLock(&_segs[i]._lock);
     }
 
     AllocationMap::~AllocationMap()
@@ -25,85 +21,96 @@ namespace AHM
 
         Destroy();
 
-        _entries = static_cast<Entry*>(
-            HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, initialCapacityPow2 * sizeof(Entry))
-            );
+        size_t perSeg = initialCapacityPow2 / kSegmentCount;
+        if (perSeg < 8) perSeg = 8;
 
-        if (!_entries)
-            return false;
+        auto nextPow2 = [](size_t x) -> size_t {
+            if (x == 0) return 1;
+            --x;
+            for (size_t sh = 1; sh < sizeof(size_t) * 8; sh <<= 1)
+                x |= (x >> sh);
+            return x + 1;
+            };
+        perSeg = nextPow2(perSeg);
 
-        _capacity = initialCapacityPow2;
-        _size = 0;
-        _tombstones = 0;
+        for (size_t i = 0; i < kSegmentCount; ++i)
+        {
+            AcquireSRWLockExclusive(&_segs[i]._lock);
+            const bool ok = InitSegmentNoLock(_segs[i], perSeg);
+            ReleaseSRWLockExclusive(&_segs[i]._lock);
 
-        // HEAP_ZERO_MEMORY => state==0 => State::Empty
+            if (!ok)
+            {
+                Destroy();
+                return false;
+            }
+        }
+
+        _initialized = true;
         return true;
     }
 
     void AllocationMap::Destroy()
     {
-        if (_entries)
+        for (size_t i = 0; i < kSegmentCount; ++i)
         {
-            HeapFree(GetProcessHeap(), 0, _entries);
-            _entries = nullptr;
+            AcquireSRWLockExclusive(&_segs[i]._lock);
+            DestroySegmentNoLock(_segs[i]);
+            ReleaseSRWLockExclusive(&_segs[i]._lock);
         }
-
-        _capacity = 0;
-        _size = 0;
-        _tombstones = 0;
+        _initialized = false;
     }
 
     bool AllocationMap::Put(void* ptr, uint32_t heapId)
     {
-        if (!ptr)
+        if (!_initialized || !ptr)
             return false;
 
-        // Non-critical work outside lock
         const uint64_t hash = HashPtr(ptr);
+        Segment& s = _segs[SegmentIndex(hash)];
 
-        AcquireSRWLockExclusive(&_lock);
+        AcquireSRWLockExclusive(&s._lock);
 
-        if (!EnsureCapacityNoLock())
+        if (!EnsureCapacityNoLock(s))
         {
-            ReleaseSRWLockExclusive(&_lock);
+            ReleaseSRWLockExclusive(&s._lock);
             return false;
         }
 
-        const bool ok = PutNoLock(ptr, heapId, hash);
+        const bool ok = PutNoLock(s, ptr, heapId, hash);
 
-        ReleaseSRWLockExclusive(&_lock);
+        ReleaseSRWLockExclusive(&s._lock);
         return ok;
     }
 
     bool AllocationMap::Take(void* ptr, uint32_t& heapIdOut)
     {
-        if (!ptr)
+        if (!_initialized || !ptr)
             return false;
 
-        // Non-critical work outside lock
         const uint64_t hash = HashPtr(ptr);
+        Segment& s = _segs[SegmentIndex(hash)];
 
-        AcquireSRWLockExclusive(&_lock);
+        AcquireSRWLockExclusive(&s._lock);
 
         size_t index = 0;
         uint32_t heapId = 0;
 
-        if (!LookupNoLock(ptr, hash, index, heapId))
+        if (!LookupNoLock(s, ptr, hash, index, heapId))
         {
-            ReleaseSRWLockExclusive(&_lock);
+            ReleaseSRWLockExclusive(&s._lock);
             return false;
         }
 
-        RemoveAtNoLock(index);
+        RemoveAtNoLock(s, index);
         heapIdOut = heapId;
 
-        // Tombstone cleanup rebuild (best-effort)
-        if (ShouldRebuildNoLock())
+        if (ShouldRebuildNoLock(s))
         {
-            (void)RebuildSameCapacityNoLock();
+            (void)RebuildSameCapacityNoLock(s);
         }
 
-        ReleaseSRWLockExclusive(&_lock);
+        ReleaseSRWLockExclusive(&s._lock);
         return true;
     }
 
@@ -117,11 +124,10 @@ namespace AHM
     uint64_t AllocationMap::HashPtr(void* p)
     {
         uintptr_t castedPtr = reinterpret_cast<uintptr_t>(p);
-        castedPtr >>= 4; // drop low alignment bits
+        castedPtr >>= 4;
 
         uint64_t x = static_cast<uint64_t>(castedPtr);
 
-        // SplitMix64-style mixing
         x += 0x9E3779B97F4A7C15ULL;
         x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
         x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
@@ -130,21 +136,47 @@ namespace AHM
         return x;
     }
 
-    bool AllocationMap::EnsureCapacityNoLock()
+    bool AllocationMap::InitSegmentNoLock(Segment& s, size_t capPow2)
     {
-        if (!_entries || _capacity == 0)
+        DestroySegmentNoLock(s);
+
+        s._entries = static_cast<Entry*>(
+            HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, capPow2 * sizeof(Entry))
+            );
+        if (!s._entries)
             return false;
 
-        // Grow when (size + tombstones + 1) / capacity >= ~0.70
-        // (Counts tombstones because they lengthen probes under churn.)
-        const size_t needed = _size + _tombstones + 1;
-        const bool shouldGrow = (needed * 100) >= (_capacity * 70);
+        s._capacity = capPow2;
+        s._size = 0;
+        s._tombstones = 0;
+        return true;
+    }
+
+    void AllocationMap::DestroySegmentNoLock(Segment& s)
+    {
+        if (s._entries)
+        {
+            HeapFree(GetProcessHeap(), 0, s._entries);
+            s._entries = nullptr;
+        }
+        s._capacity = 0;
+        s._size = 0;
+        s._tombstones = 0;
+    }
+
+    bool AllocationMap::EnsureCapacityNoLock(Segment& s)
+    {
+        if (!s._entries || s._capacity == 0)
+            return false;
+
+        const size_t needed = s._size + s._tombstones + 1;
+        const bool shouldGrow = (needed * 100) >= (s._capacity * 85);
 
         if (!shouldGrow)
             return true;
 
-        const size_t newCap = _capacity * 2;
-        if (newCap < _capacity) // overflow
+        const size_t newCap = s._capacity * 2;
+        if (newCap < s._capacity)
             return false;
 
         Entry* newEntries = static_cast<Entry*>(
@@ -155,15 +187,14 @@ namespace AHM
 
         const size_t newMask = newCap - 1;
 
-        // Rehash occupied entries into the new table (tombstones are dropped)
-        for (size_t i = 0; i < _capacity; ++i)
+        for (size_t i = 0; i < s._capacity; ++i)
         {
-            const Entry& oldE = _entries[i];
+            const Entry& oldE = s._entries[i];
             if (oldE.state != State::Occupied)
                 continue;
 
-            const uint64_t h = oldE.hash; // USE STORED HASH
-            const size_t start = static_cast<size_t>(h) & newMask;
+            const uint64_t h = oldE.hash;
+            const size_t start = SegmentStart(h, newMask);
 
             for (size_t step = 0; step < newCap; ++step)
             {
@@ -181,44 +212,43 @@ namespace AHM
             }
         }
 
-        HeapFree(GetProcessHeap(), 0, _entries);
-        _entries = newEntries;
-        _capacity = newCap;
-        _tombstones = 0; // tombstones removed by rehash
-        // _size unchanged
+        HeapFree(GetProcessHeap(), 0, s._entries);
+        s._entries = newEntries;
+        s._capacity = newCap;
+        s._tombstones = 0;
 
         return true;
     }
 
-    bool AllocationMap::PutNoLock(void* ptr, uint32_t heapId, uint64_t hash)
+    bool AllocationMap::PutNoLock(Segment& s, void* ptr, uint32_t heapId, uint64_t hash)
     {
-        if (!_entries || _capacity == 0)
+        if (!s._entries || s._capacity == 0)
             return false;
 
-        const size_t mask = _capacity - 1;
-        const size_t start = static_cast<size_t>(hash) & mask;
+        const size_t mask = s._capacity - 1;
+        const size_t start = SegmentStart(hash, mask);
 
         size_t firstTomb = static_cast<size_t>(-1);
 
-        for (size_t step = 0; step < _capacity; ++step)
+        for (size_t step = 0; step < s._capacity; ++step)
         {
             const size_t idx = (start + step) & mask;
-            Entry& e = _entries[idx];
+            Entry& e = s._entries[idx];
 
             if (e.state == State::Empty)
             {
                 const size_t ins = (firstTomb != static_cast<size_t>(-1)) ? firstTomb : idx;
-                Entry& dst = _entries[ins];
+                Entry& dst = s._entries[ins];
 
                 dst.key = ptr;
                 dst.hash = hash;
                 dst.value = heapId;
                 dst.state = State::Occupied;
 
-                if (ins == firstTomb && _tombstones > 0)
-                    --_tombstones;
+                if (ins == firstTomb && s._tombstones > 0)
+                    --s._tombstones;
 
-                ++_size;
+                ++s._size;
                 return true;
             }
 
@@ -229,49 +259,47 @@ namespace AHM
                 continue;
             }
 
-            // Occupied: quick reject by hash first, then key compare
             if (e.hash == hash && e.key == ptr)
             {
-                e.value = heapId; // update
+                e.value = heapId;
                 return true;
             }
         }
 
-        // No empty slot, but tombstone exists
         if (firstTomb != static_cast<size_t>(-1))
         {
-            Entry& dst = _entries[firstTomb];
+            Entry& dst = s._entries[firstTomb];
 
             dst.key = ptr;
             dst.hash = hash;
             dst.value = heapId;
             dst.state = State::Occupied;
 
-            if (_tombstones > 0)
-                --_tombstones;
+            if (s._tombstones > 0)
+                --s._tombstones;
 
-            ++_size;
+            ++s._size;
             return true;
         }
 
         return false;
     }
 
-    bool AllocationMap::LookupNoLock(void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut)
+    bool AllocationMap::LookupNoLock(Segment& s, void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut)
     {
-        if (!ptr || !_entries || _capacity == 0)
+        if (!ptr || !s._entries || s._capacity == 0)
             return false;
 
-        const size_t mask = _capacity - 1;
-        const size_t start = static_cast<size_t>(hash) & mask;
+        const size_t mask = s._capacity - 1;
+        const size_t start = SegmentStart(hash, mask);
 
-        for (size_t step = 0; step < _capacity; ++step)
+        for (size_t step = 0; step < s._capacity; ++step)
         {
             const size_t idx = (start + step) & mask;
-            Entry& e = _entries[idx];
+            Entry& e = s._entries[idx];
 
             if (e.state == State::Empty)
-                return false; // stop: key not present
+                return false;
 
             if (e.state == State::Occupied)
             {
@@ -287,49 +315,48 @@ namespace AHM
         return false;
     }
 
-    void AllocationMap::RemoveAtNoLock(size_t index)
+    void AllocationMap::RemoveAtNoLock(Segment& s, size_t index)
     {
-        Entry& e = _entries[index];
+        Entry& e = s._entries[index];
 
         e.key = nullptr;
         e.hash = 0;
         e.value = 0;
         e.state = State::Tombstone;
 
-        if (_size > 0)
-            --_size;
+        if (s._size > 0)
+            --s._size;
 
-        ++_tombstones;
+        ++s._tombstones;
     }
 
-    bool AllocationMap::ShouldRebuildNoLock() const
+    bool AllocationMap::ShouldRebuildNoLock(const Segment& s) const
     {
-        if (_capacity == 0)
+        if (s._capacity == 0)
             return false;
 
-        // Rebuild if tombstones are a significant fraction, or more than live entries. Must be bigger that threshold.
-        if (_tombstones < 4096)
+        if (s._tombstones < 1024)
             return false;
 
-        if ((_tombstones * 100) >= (_capacity * 25))
+        if ((s._tombstones * 100) >= (s._capacity * 25))
             return true;
 
-        if (_tombstones > _size)
+        if (s._tombstones > s._size)
             return true;
 
-        const size_t unusable = _size + _tombstones;
-        if ((unusable * 100) >= (_capacity * 85))
+        const size_t unusable = s._size + s._tombstones;
+        if ((unusable * 100) >= (s._capacity * 85))
             return true;
 
         return false;
     }
 
-    bool AllocationMap::RebuildSameCapacityNoLock()
+    bool AllocationMap::RebuildSameCapacityNoLock(Segment& s)
     {
-        if (!_entries || _capacity == 0)
+        if (!s._entries || s._capacity == 0)
             return false;
 
-        const size_t newCap = _capacity;
+        const size_t newCap = s._capacity;
 
         Entry* newEntries = static_cast<Entry*>(
             HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, newCap * sizeof(Entry))
@@ -339,14 +366,14 @@ namespace AHM
 
         const size_t newMask = newCap - 1;
 
-        for (size_t i = 0; i < _capacity; ++i)
+        for (size_t i = 0; i < s._capacity; ++i)
         {
-            const Entry& oldE = _entries[i];
+            const Entry& oldE = s._entries[i];
             if (oldE.state != State::Occupied)
                 continue;
 
-            const uint64_t h = oldE.hash; // USE STORED HASH
-            const size_t start = static_cast<size_t>(h) & newMask;
+            const uint64_t h = oldE.hash;
+            const size_t start = SegmentStart(h, newMask);
 
             for (size_t step = 0; step < newCap; ++step)
             {
@@ -364,11 +391,9 @@ namespace AHM
             }
         }
 
-        HeapFree(GetProcessHeap(), 0, _entries);
-        _entries = newEntries;
-
-        // Capacity unchanged, live entries unchanged
-        _tombstones = 0;
+        HeapFree(GetProcessHeap(), 0, s._entries);
+        s._entries = newEntries;
+        s._tombstones = 0;
 
         return true;
     }

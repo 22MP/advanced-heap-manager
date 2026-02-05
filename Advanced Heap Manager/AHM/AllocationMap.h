@@ -12,6 +12,7 @@ namespace AHM
         AllocationMap();
         ~AllocationMap();
 
+        // initialCapacityPow2 is total capacity across all stripes (must be pow2)
         bool Init(size_t initialCapacityPow2);
         void Destroy();
 
@@ -26,31 +27,53 @@ namespace AHM
 
         struct Entry
         {
-            void* key;     // pointer key
-            uint64_t hash;    // cached hash of key
-            uint32_t value;   // heapId
-            State    state;   // Empty/Occupied/Tombstone
+            void* key;    // ptr
+            uint64_t hash;   // full hash (stored to speed comparisons & rehash)
+            uint32_t value;  // heapId
+            State    state;  // 0-inited -> Empty
         };
 
-        SRWLOCK _lock;
+        struct Segment
+        {
+            SRWLOCK _lock{};
+            Entry* _entries = nullptr;
+            size_t  _capacity = 0;    // pow2
+            size_t  _size = 0;
+            size_t  _tombstones = 0;
+        };
 
-        Entry* _entries;
-        size_t _capacity;
-        size_t _size;
-        size_t _tombstones;
-
+    private:
         static bool     IsPowerOfTwo(size_t x);
         static uint64_t HashPtr(void* p);
 
-        // Caller must hold exclusive lock:
-        bool EnsureCapacityNoLock();
+        // Stripe config
+        static constexpr size_t kSegmentCount = 64; // must be pow2
+        static constexpr size_t kSegmentMask = kSegmentCount - 1;
 
-        bool PutNoLock(void* ptr, uint32_t heapId, uint64_t hash);
+        // segment index from hash (capacity-independent)
+        static size_t SegmentIndex(uint64_t hash) { return static_cast<size_t>(hash) & kSegmentMask; }
 
-        bool LookupNoLock(void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut);
-        void RemoveAtNoLock(size_t index);
+        // index seed inside a segment
+        static size_t SegmentStart(uint64_t hash, size_t segMask)
+        {
+            // shift away the segment-selection bits
+            constexpr int kShift = 6; // log2(64)
+            return static_cast<size_t>(hash >> kShift) & segMask;
+        }
 
-        bool ShouldRebuildNoLock() const;
-        bool RebuildSameCapacityNoLock();
+        bool InitSegmentNoLock(Segment& s, size_t capPow2);
+        void DestroySegmentNoLock(Segment& s);
+
+        bool EnsureCapacityNoLock(Segment& s);
+        bool PutNoLock(Segment& s, void* ptr, uint32_t heapId, uint64_t hash);
+        bool LookupNoLock(Segment& s, void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut);
+        void RemoveAtNoLock(Segment& s, size_t index);
+
+        bool ShouldRebuildNoLock(const Segment& s) const;
+        bool RebuildSameCapacityNoLock(Segment& s);
+
+    private:
+        Segment _segs[kSegmentCount];
+        bool    _initialized = false;
     };
 }
