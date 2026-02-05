@@ -3,6 +3,11 @@
 
 namespace AHM
 {
+    // ------------------------------------------------------------
+    // Constructor
+    // Initializes SRW locks for each segment.
+    // Segments are independently locked to reduce contention.
+    // ------------------------------------------------------------
     AllocationMap::AllocationMap()
     {
         for (size_t i = 0; i < kSegmentCount; ++i)
@@ -14,6 +19,11 @@ namespace AHM
         Destroy();
     }
 
+    // ------------------------------------------------------------
+    // Init
+    // Initializes all segments with equal capacity.
+    // initialCapacityPow2 must be power-of-two and is split per segment.
+    // ------------------------------------------------------------
     bool AllocationMap::Init(size_t initialCapacityPow2)
     {
         if (!IsPowerOfTwo(initialCapacityPow2))
@@ -21,9 +31,13 @@ namespace AHM
 
         Destroy();
 
+        // Divide capacity across segments
         size_t perSeg = initialCapacityPow2 / kSegmentCount;
+
+        // Enforce minimum size to keep probing efficient
         if (perSeg < 8) perSeg = 8;
 
+        // Round segment capacity up to next power of two
         auto nextPow2 = [](size_t x) -> size_t {
             if (x == 0) return 1;
             --x;
@@ -33,6 +47,7 @@ namespace AHM
             };
         perSeg = nextPow2(perSeg);
 
+        // Initialize each segment independently
         for (size_t i = 0; i < kSegmentCount; ++i)
         {
             AcquireSRWLockExclusive(&_segs[i]._lock);
@@ -50,6 +65,11 @@ namespace AHM
         return true;
     }
 
+    // ------------------------------------------------------------
+    // Destroy
+    // Releases memory for all segments.
+    // Safe to call multiple times.
+    // ------------------------------------------------------------
     void AllocationMap::Destroy()
     {
         for (size_t i = 0; i < kSegmentCount; ++i)
@@ -61,6 +81,11 @@ namespace AHM
         _initialized = false;
     }
 
+    // ------------------------------------------------------------
+    // Put
+    // Inserts or updates ptr -> heapId mapping.
+    // Segment is chosen via hashed pointer.
+    // ------------------------------------------------------------
     bool AllocationMap::Put(void* ptr, uint32_t heapId)
     {
         if (!_initialized || !ptr)
@@ -71,6 +96,7 @@ namespace AHM
 
         AcquireSRWLockExclusive(&s._lock);
 
+        // Ensure capacity before inserting
         if (!EnsureCapacityNoLock(s))
         {
             ReleaseSRWLockExclusive(&s._lock);
@@ -83,6 +109,11 @@ namespace AHM
         return ok;
     }
 
+    // ------------------------------------------------------------
+    // Take
+    // Removes ptr mapping and returns heapId.
+    // May trigger rebuild if tombstones accumulate.
+    // ------------------------------------------------------------
     bool AllocationMap::Take(void* ptr, uint32_t& heapIdOut)
     {
         if (!_initialized || !ptr)
@@ -96,15 +127,18 @@ namespace AHM
         size_t index = 0;
         uint32_t heapId = 0;
 
+        // Lookup entry
         if (!LookupNoLock(s, ptr, hash, index, heapId))
         {
             ReleaseSRWLockExclusive(&s._lock);
             return false;
         }
 
+        // Mark slot as tombstone
         RemoveAtNoLock(s, index);
         heapIdOut = heapId;
 
+        // Rebuild segment if tombstones degrade performance
         if (ShouldRebuildNoLock(s))
         {
             (void)RebuildSameCapacityNoLock(s);
@@ -114,20 +148,30 @@ namespace AHM
         return true;
     }
 
-    // ---------------- Helpers ----------------
+    // ==================== Helpers ====================
 
+    // ------------------------------------------------------------
+    // IsPowerOfTwo
+    // Used to enforce mask-based indexing.
+    // ------------------------------------------------------------
     bool AllocationMap::IsPowerOfTwo(size_t x)
     {
         return x != 0 && ((x & (x - 1)) == 0);
     }
 
+    // ------------------------------------------------------------
+    // HashPtr
+    // Hashes pointer value with alignment stripping and mix.
+    // Lower bits are ignored to avoid allocator alignment patterns.
+    // ------------------------------------------------------------
     uint64_t AllocationMap::HashPtr(void* p)
     {
         uintptr_t castedPtr = reinterpret_cast<uintptr_t>(p);
-        castedPtr >>= 4;
+        castedPtr >>= 4; // drop alignment bits
 
         uint64_t x = static_cast<uint64_t>(castedPtr);
 
+        // SplitMix64-style avalanche
         x += 0x9E3779B97F4A7C15ULL;
         x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
         x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
@@ -136,6 +180,11 @@ namespace AHM
         return x;
     }
 
+    // ------------------------------------------------------------
+    // InitSegmentNoLock
+    // Allocates and initializes segment storage.
+    // Caller must hold segment lock.
+    // ------------------------------------------------------------
     bool AllocationMap::InitSegmentNoLock(Segment& s, size_t capPow2)
     {
         DestroySegmentNoLock(s);
@@ -152,6 +201,10 @@ namespace AHM
         return true;
     }
 
+    // ------------------------------------------------------------
+    // DestroySegmentNoLock
+    // Frees segment storage and resets counters.
+    // ------------------------------------------------------------
     void AllocationMap::DestroySegmentNoLock(Segment& s)
     {
         if (s._entries)
@@ -164,6 +217,11 @@ namespace AHM
         s._tombstones = 0;
     }
 
+    // ------------------------------------------------------------
+    // EnsureCapacityNoLock
+    // Grows segment when load factor exceeds threshold.
+    // Tombstones are counted as occupied.
+    // ------------------------------------------------------------
     bool AllocationMap::EnsureCapacityNoLock(Segment& s)
     {
         if (!s._entries || s._capacity == 0)
@@ -177,7 +235,7 @@ namespace AHM
 
         const size_t newCap = s._capacity * 2;
         if (newCap < s._capacity)
-            return false;
+            return false; // overflow
 
         Entry* newEntries = static_cast<Entry*>(
             HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, newCap * sizeof(Entry))
@@ -187,6 +245,7 @@ namespace AHM
 
         const size_t newMask = newCap - 1;
 
+        // Rehash occupied entries
         for (size_t i = 0; i < s._capacity; ++i)
         {
             const Entry& oldE = s._entries[i];
@@ -220,6 +279,10 @@ namespace AHM
         return true;
     }
 
+    // ------------------------------------------------------------
+    // PutNoLock
+    // Linear probing insert with tombstone reuse.
+    // ------------------------------------------------------------
     bool AllocationMap::PutNoLock(Segment& s, void* ptr, uint32_t heapId, uint64_t hash)
     {
         if (!s._entries || s._capacity == 0)
@@ -259,6 +322,7 @@ namespace AHM
                 continue;
             }
 
+            // Update existing entry
             if (e.hash == hash && e.key == ptr)
             {
                 e.value = heapId;
@@ -266,6 +330,7 @@ namespace AHM
             }
         }
 
+        // Insert into first tombstone if no empty slot found
         if (firstTomb != static_cast<size_t>(-1))
         {
             Entry& dst = s._entries[firstTomb];
@@ -285,6 +350,11 @@ namespace AHM
         return false;
     }
 
+    // ------------------------------------------------------------
+    // LookupNoLock
+    // Linear probing lookup.
+    // Stops early on empty slot.
+    // ------------------------------------------------------------
     bool AllocationMap::LookupNoLock(Segment& s, void* ptr, uint64_t hash, size_t& indexOut, uint32_t& heapIdOut)
     {
         if (!ptr || !s._entries || s._capacity == 0)
@@ -301,20 +371,22 @@ namespace AHM
             if (e.state == State::Empty)
                 return false;
 
-            if (e.state == State::Occupied)
+            if (e.state == State::Occupied &&
+                e.hash == hash && e.key == ptr)
             {
-                if (e.hash == hash && e.key == ptr)
-                {
-                    indexOut = idx;
-                    heapIdOut = e.value;
-                    return true;
-                }
+                indexOut = idx;
+                heapIdOut = e.value;
+                return true;
             }
         }
 
         return false;
     }
 
+    // ------------------------------------------------------------
+    // RemoveAtNoLock
+    // Converts occupied slot into tombstone.
+    // ------------------------------------------------------------
     void AllocationMap::RemoveAtNoLock(Segment& s, size_t index)
     {
         Entry& e = s._entries[index];
@@ -330,6 +402,10 @@ namespace AHM
         ++s._tombstones;
     }
 
+    // ------------------------------------------------------------
+    // ShouldRebuildNoLock
+    // Heuristic-based rebuild trigger.
+    // ------------------------------------------------------------
     bool AllocationMap::ShouldRebuildNoLock(const Segment& s) const
     {
         if (s._capacity == 0)
@@ -351,6 +427,11 @@ namespace AHM
         return false;
     }
 
+    // ------------------------------------------------------------
+    // RebuildSameCapacityNoLock
+    // Rehashes occupied entries into fresh table of same size.
+    // Removes all tombstones.
+    // ------------------------------------------------------------
     bool AllocationMap::RebuildSameCapacityNoLock(Segment& s)
     {
         if (!s._entries || s._capacity == 0)
