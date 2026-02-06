@@ -176,12 +176,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Benchmark.cpp" />
     <ClCompile Include="TestApp.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\AHM\AHM.vcxproj">
       <Project>{c06b331d-d058-4132-837b-89169a215d5b}</Project>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Benchmark.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
