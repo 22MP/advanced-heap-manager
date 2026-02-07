@@ -1,51 +1,48 @@
-#include "Benchmark.h"
 #include <iostream>
+#include <vector>
+#include <iomanip>
+#include "BenchmarkMalloc.h"
+#include "BenchmarkAHM.h"
 
-int main(int argc, char* argv[])
+int main()
 {
     std::cout << "========================================\n";
     std::cout << "TestApp - Memory Allocation Benchmark\n";
     std::cout << "========================================\n\n";
 
-    if (argc > 1)
-    {
-        std::string mode = argv[1];
+    std::vector<int> threadCounts = { 1, 2, 5, 10, 50 };
+    std::vector<BenchmarkResult> mallocResults;
+    std::vector<BenchmarkResult> ahmResults;
 
-        if (mode == "malloc")
-        {
-            std::cout << "Mode: malloc/free only\n";
-            run_malloc_benchmark();
-        }
-        else if (mode == "ahm")
-        {
-            std::cout << "Mode: AHM only\n";
-            run_ahm_benchmark();
-        }
-        else if (mode == "compare")
-        {
-            std::cout << "Mode: Comparison (malloc vs AHM)\n";
-            run_comparison_benchmark();
-        }
-        else
-        {
-            std::cout << "Unknown mode: " << mode << "\n";
-            std::cout << "Usage: TestApp.exe [malloc|ahm|compare]\n";
-            return 1;
-        }
-    }
-    else
-    {
-        // Default: pokreni sve testove
-        std::cout << "Mode: All tests (default)\n\n";
+    // Pokretanje benchmarka
+    run_malloc_benchmark(threadCounts, mallocResults);
+    run_ahm_benchmark(threadCounts, ahmResults);
 
-        //run_malloc_benchmark();
-        //run_ahm_benchmark();
-        run_comparison_benchmark();
-    }
-
-    std::cout << "========================================\n";
-    std::cout << "Benchmark completed!\n";
+    // Prikaz rezultata poreðeno po broju niti
+    std::cout << "\n========================================\n";
+    std::cout << "Benchmark Results Comparison\n";
     std::cout << "========================================\n";
 
+    std::cout << std::left << std::setw(10) << "Threads"
+        << std::setw(12) << "malloc(s)"
+        << std::setw(12) << "AHM(s)"
+        << std::setw(12) << "Speedup"
+        << "\n";
+    std::cout << std::string(50, '-') << "\n";
+
+    for (size_t i = 0; i < threadCounts.size(); i++)
+    {
+        double speedup = mallocResults[i].timeSeconds / ahmResults[i].timeSeconds;
+
+        std::cout << std::left << std::setw(10) << threadCounts[i]
+            << std::fixed << std::setprecision(3)
+            << std::setw(12) << mallocResults[i].timeSeconds
+            << std::setw(12) << ahmResults[i].timeSeconds
+            << std::setprecision(2)
+            << std::setw(12) << speedup
+            << "\n";
+    }
+
+    std::cout << "\nBenchmark completed!\n";
     return 0;
 }

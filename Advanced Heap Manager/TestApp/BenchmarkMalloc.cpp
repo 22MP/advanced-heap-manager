@@ -1,0 +1,80 @@
+#include "BenchmarkMalloc.h"
+#include <vector>
+#include <thread>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <iomanip>
+
+using std::vector;
+using std::thread;
+using std::chrono::high_resolution_clock;
+using std::chrono::duration;
+
+const size_t TOTAL_MEMORY = 4ULL * 1024 * 1024 * 1024; // 4 GB ukupno
+const size_t BLOCK_SIZE = 64 * 1024;                    
+
+// ---------- malloc worker ----------
+static void malloc_worker(size_t bytesPerThread)
+{
+    size_t allocations = bytesPerThread / BLOCK_SIZE;
+    size_t remainder = bytesPerThread % BLOCK_SIZE;
+
+    std::vector<void*> ptrs;
+    ptrs.reserve(allocations + (remainder ? 1 : 0));
+
+    for (size_t i = 0; i < allocations; i++)
+    {
+        void* p = malloc(BLOCK_SIZE);
+        if (p) ptrs.push_back(p);
+    }
+
+    if (remainder > 0)
+    {
+        void* p = malloc(remainder);
+        if (p) ptrs.push_back(p);
+    }
+
+    for (void* p : ptrs)
+        free(p);
+}
+
+// ---------- malloc test for N threads ----------
+static BenchmarkResult run_malloc_test_for_threads(int threadCount)
+{
+    size_t bytesPerThread = TOTAL_MEMORY / threadCount;
+
+    auto start = high_resolution_clock::now();
+    {
+        vector<thread> threads;
+        for (int i = 0; i < threadCount; i++)
+            threads.emplace_back(malloc_worker, bytesPerThread);
+
+        for (auto& t : threads)
+            t.join();
+    }
+    auto end = high_resolution_clock::now();
+
+    double timeSeconds = duration<double>(end - start).count();
+
+    return { threadCount, timeSeconds };
+}
+
+// ---------- public function ----------
+void run_malloc_benchmark(const vector<int>& threadCounts, vector<BenchmarkResult>& results)
+{
+    std::cout << "\n========================================\n";
+    std::cout << "Benchmark - malloc/free\n";
+    std::cout << "========================================\n";
+
+    for (int tc : threadCounts)
+    {
+        std::cout << "Threads: " << tc << " ... ";
+        std::cout.flush();
+
+        BenchmarkResult result = run_malloc_test_for_threads(tc);
+        results.push_back(result);
+
+        std::cout << result.timeSeconds << " s\n";
+    }
+}

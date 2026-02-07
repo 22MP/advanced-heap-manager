@@ -182,7 +182,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="Benchmark.cpp" />
+    <ClCompile Include="BenchmarkAHM.cpp" />
+    <ClCompile Include="BenchmarkMalloc.cpp" />
     <ClCompile Include="TestApp.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -191,7 +192,9 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Benchmark.h" />
+    <ClInclude Include="BenchmarkAHM.h" />
+    <ClInclude Include="BenchmarkMalloc.h" />
+    <ClInclude Include="BenchmarkTypes.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
