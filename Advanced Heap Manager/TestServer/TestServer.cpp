@@ -1,20 +1,35 @@
-// TestServer.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
-
+#include "Benchmark.h"
 #include <iostream>
+#include <iomanip>
+#include <ctime>
+
+void PrintResults(const BenchmarkResult& r)
+{
+    std::cout << "\n========================================\n";
+    std::cout << "Mode: " << (r.useAHM ? "AHM" : "malloc/free") << "\n";
+    std::cout << "Time: " << std::fixed << std::setprecision(2)
+        << r.elapsedSeconds << " s\n";
+    std::cout << "Messages: " << r.totalMessages << "\n";
+    std::cout << "Throughput: "
+        << (r.totalMessages / r.elapsedSeconds) << " msg/sec\n";
+}
 
 int main()
 {
-    std::cout << "Hello World!\n";
+    srand((unsigned)time(nullptr));
+
+    int clients, messages;
+    std::cout << "Clients: "; std::cin >> clients;
+    std::cout << "Messages per client: "; std::cin >> messages;
+
+    auto ahm = RunBenchmark(true, clients, messages);
+    auto mal = RunBenchmark(false, clients, messages);
+
+    PrintResults(ahm);
+    PrintResults(mal);
+
+    std::cout << "\nAHM faster by: " << ((mal.elapsedSeconds - ahm.elapsedSeconds) / mal.elapsedSeconds * 100.0) << " %\n";
+
+    std::cin.ignore(); std::cin.get();
+    return 0;
 }
-
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
-
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
