@@ -122,11 +122,10 @@ namespace AHM
         const uint64_t hash = HashPtr(ptr);
         Segment& s = _segs[SegmentIndex(hash)];
 
-        AcquireSRWLockExclusive(&s._lock);
-
         size_t index = 0;
         uint32_t heapId = 0;
-
+        
+        AcquireSRWLockExclusive(&s._lock);
         // Lookup entry
         if (!LookupNoLock(s, ptr, hash, index, heapId))
         {
@@ -244,6 +243,8 @@ namespace AHM
             return false;
 
         const size_t newMask = newCap - 1;
+        size_t newSize = 0;
+
 
         // Rehash occupied entries
         for (size_t i = 0; i < s._capacity; ++i)
@@ -262,6 +263,7 @@ namespace AHM
 
                 if (dst.state == State::Empty)
                 {
+                    ++newSize;
                     dst.key = oldE.key;
                     dst.hash = oldE.hash;
                     dst.value = oldE.value;
@@ -274,6 +276,7 @@ namespace AHM
         HeapFree(GetProcessHeap(), 0, s._entries);
         s._entries = newEntries;
         s._capacity = newCap;
+        s._size = newSize;
         s._tombstones = 0;
 
         return true;
@@ -446,7 +449,7 @@ namespace AHM
             return false;
 
         const size_t newMask = newCap - 1;
-
+        size_t newSize = 0;
         for (size_t i = 0; i < s._capacity; ++i)
         {
             const Entry& oldE = s._entries[i];
@@ -463,6 +466,7 @@ namespace AHM
 
                 if (dst.state == State::Empty)
                 {
+                    ++newSize;
                     dst.key = oldE.key;
                     dst.hash = oldE.hash;
                     dst.value = oldE.value;
@@ -474,6 +478,7 @@ namespace AHM
 
         HeapFree(GetProcessHeap(), 0, s._entries);
         s._entries = newEntries;
+        s._size = newSize;
         s._tombstones = 0;
 
         return true;

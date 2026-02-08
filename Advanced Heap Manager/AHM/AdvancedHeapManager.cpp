@@ -76,7 +76,7 @@ namespace AHM
             }
 
             g_heapCount = 0;
-            g_rr.store(0, std::memory_order_relaxed);
+            g_rr.store(0);
             g_initialized = false;
         }
     }
