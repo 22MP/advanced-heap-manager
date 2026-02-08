@@ -17,6 +17,7 @@ const size_t BLOCK_SIZE = 64 * 1024;
 // ---------- malloc worker ----------
 static void malloc_worker(size_t bytesPerThread)
 {
+    constexpr size_t PAGE_SIZE = 4096;
     size_t allocations = bytesPerThread / BLOCK_SIZE;
     size_t remainder = bytesPerThread % BLOCK_SIZE;
 
@@ -26,13 +27,26 @@ static void malloc_worker(size_t bytesPerThread)
     for (size_t i = 0; i < allocations; i++)
     {
         void* p = malloc(BLOCK_SIZE);
-        if (p) ptrs.push_back(p);
+        if (!p)
+            break;
+        char* c = static_cast<char*>(p);
+        for (size_t off = 0; off < BLOCK_SIZE; off += PAGE_SIZE)
+            c[off] = 0;
+
+        ptrs.push_back(p);
     }
 
     if (remainder > 0)
     {
         void* p = malloc(remainder);
-        if (p) ptrs.push_back(p);
+        if (p)
+        {
+            char* c = static_cast<char*>(p);
+            for (size_t off = 0; off < remainder; off += PAGE_SIZE)
+                c[off] = 0;
+
+            ptrs.push_back(p);
+        }
     }
 
     for (void* p : ptrs)

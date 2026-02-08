@@ -19,6 +19,7 @@ const size_t HEAP_SIZE_BYTES = TOTAL_MEMORY / HEAP_COUNT;
 // ---------- AHM worker ----------
 static void ahm_worker(size_t bytesPerThread)
 {
+    constexpr size_t PAGE_SIZE = 4096;
     size_t allocations = bytesPerThread / BLOCK_SIZE;
     size_t remainder = bytesPerThread % BLOCK_SIZE; // ostatak koji ne stane u pun blok
 
@@ -29,8 +30,15 @@ static void ahm_worker(size_t bytesPerThread)
     for (size_t i = 0; i < allocations; i++)
     {
         void* p = AHM::Malloc(BLOCK_SIZE);
-        if (p)
-            ptrs.push_back(p);
+        if (!p)
+            break;
+
+        // Postavlja 0 u svaku stranicu memorije kako ne bi doslo do lazy alokacije
+        char* c = static_cast<char*>(p);
+        for (size_t off = 0; off < BLOCK_SIZE; off += PAGE_SIZE)
+            c[off] = 0;
+
+        ptrs.push_back(p);
     }
 
     // Alokacija ostatka ako postoji
@@ -38,7 +46,14 @@ static void ahm_worker(size_t bytesPerThread)
     {
         void* p = AHM::Malloc(remainder);
         if (p)
+        {
+            char* c = static_cast<char*>(p);
+            for (size_t off = 0; off < remainder; off += PAGE_SIZE)
+                c[off] = 0;
+
             ptrs.push_back(p);
+        }
+
     }
 
     // Dealokacija
