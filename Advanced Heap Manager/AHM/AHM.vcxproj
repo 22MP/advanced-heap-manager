@@ -195,6 +195,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AdvancedHeapManager.h" />
+    <ClInclude Include="AllocationHeader.h" />
     <ClInclude Include="AllocationMap.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="HeapEntry.h" />

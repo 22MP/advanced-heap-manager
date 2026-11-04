@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "AdvancedHeapManager.h"
 
+#include "AllocationHeader.h"
 #include "AllocationMap.h"
 #include "HeapEntry.h"
 
@@ -20,6 +21,9 @@ namespace AHM
 
         // Pointer -> heapId tracking
         AllocationMap g_map;
+
+		// Allocation strategy(map or header)
+        Strategy g_strategy = Strategy::Map;
 
         // Init/Shutdown guard 
         SRWLOCK   g_stateLock;
@@ -80,8 +84,96 @@ namespace AHM
             g_initialized = false;
         }
     }
+    // ---------- Strategija 1: AllocationMap (originalno) ----------
+    static void* MallocMap(size_t sizeBytes)
+    {
+        const uint32_t ticket = g_rr.fetch_add(1, std::memory_order_relaxed);
+        const uint32_t heapId =
+            static_cast<uint32_t>(ticket % static_cast<uint32_t>(g_heapCount));
 
-    void Initialize(size_t heapCount, size_t heapSizeBytes)
+        HeapEntry& he = g_heaps[heapId];
+
+        AcquireSRWLockExclusive(&he.heapLock);
+        void* ptr = HeapAlloc(he.heapHandle, 0, sizeBytes);
+        ReleaseSRWLockExclusive(&he.heapLock);
+
+        if (!ptr)
+            return nullptr;
+
+        if (!g_map.Put(ptr, heapId))
+        {
+            AcquireSRWLockExclusive(&he.heapLock);
+            HeapFree(he.heapHandle, 0, ptr);
+            ReleaseSRWLockExclusive(&he.heapLock);
+            return nullptr;
+        }
+        return ptr;
+    }
+
+    static void FreeMap(void* ptr)
+    {
+        uint32_t heapId = 0;
+        if (!g_map.Take(ptr, heapId))
+            return;
+        if (heapId >= g_heapCount)
+            return;
+
+        HeapEntry& he = g_heaps[heapId];
+
+        AcquireSRWLockExclusive(&he.heapLock);
+        HeapFree(he.heapHandle, 0, ptr);
+        ReleaseSRWLockExclusive(&he.heapLock);
+    }
+
+    // ---------- Strategija 2: AllocationHeader ----------
+    static void* MallocHeader(size_t sizeBytes)
+    {
+        // zaštita od overflow-a pri sabiranju
+        if (sizeBytes > SIZE_MAX - sizeof(AllocationHeader))
+            return nullptr;
+        const size_t totalSize = sizeof(AllocationHeader) + sizeBytes;
+
+        const uint32_t ticket = g_rr.fetch_add(1, std::memory_order_relaxed);
+        const uint32_t heapId =
+            static_cast<uint32_t>(ticket % static_cast<uint32_t>(g_heapCount));
+
+        HeapEntry& he = g_heaps[heapId];
+
+        AcquireSRWLockExclusive(&he.heapLock);
+        void* raw = HeapAlloc(he.heapHandle, 0, totalSize);
+        ReleaseSRWLockExclusive(&he.heapLock);
+
+        if (!raw)
+            return nullptr;
+
+        AllocationHeader* hdr = static_cast<AllocationHeader*>(raw);
+        hdr->heapId = heapId;
+        hdr->magic = AHM_MAGIC;
+
+        return hdr + 1;    // korisnik dobija adresu IZA headera
+    }
+
+    static void FreeHeader(void* ptr)
+    {
+        AllocationHeader* hdr = static_cast<AllocationHeader*>(ptr) - 1;
+
+        if (hdr->magic != AHM_MAGIC)
+            return;                       // nije naš blok ili je već oslobođen
+
+        const uint32_t heapId = hdr->heapId;
+        if (heapId >= g_heapCount)
+            return;
+
+        hdr->magic = 0;                   // da drugi Free() uhvati provjera
+
+        HeapEntry& he = g_heaps[heapId];
+
+        AcquireSRWLockExclusive(&he.heapLock);
+        HeapFree(he.heapHandle, 0, hdr);  // oslobađa POČETAK bloka (hdr), ne ptr
+        ReleaseSRWLockExclusive(&he.heapLock);
+    }
+
+    void Initialize(size_t heapCount, size_t heapSizeBytes, Strategy strategy)
     {
         EnsureStateLockInit();
         AcquireSRWLockExclusive(&g_stateLock);
@@ -145,31 +237,34 @@ namespace AHM
             }
         }
 
-        // Init map (capacity as power of two for fast search)
-        size_t desired = heapCount * 1024;
-        if (desired < 1024) desired = 1024;
-        const size_t cap = NextPow2(desired);
-
-        if (!g_map.Init(cap))
+        // Mapa se pravi samo u Map strategiji
+        if (strategy == Strategy::Map)
         {
+            size_t desired = heapCount * 1024;
+            if (desired < 1024) desired = 1024;
+            const size_t cap = NextPow2(desired);
 
-            g_map.Destroy();
-
-            for (size_t i = 0; i < g_heapCount; ++i)
+            if (!g_map.Init(cap))
             {
-                if (g_heaps[i].heapHandle)
-                    HeapDestroy(g_heaps[i].heapHandle);
-                g_heaps[i].heapHandle = nullptr;
+                g_map.Destroy();
+
+                for (size_t i = 0; i < g_heapCount; ++i)
+                {
+                    if (g_heaps[i].heapHandle)
+                        HeapDestroy(g_heaps[i].heapHandle);
+                    g_heaps[i].heapHandle = nullptr;
+                }
+
+                HeapFree(GetProcessHeap(), 0, g_heaps);
+                g_heaps = nullptr;
+                g_heapCount = 0;
+
+                ReleaseSRWLockExclusive(&g_stateLock);
+                return;
             }
-
-            HeapFree(GetProcessHeap(), 0, g_heaps);
-            g_heaps = nullptr;
-            g_heapCount = 0;
-
-            ReleaseSRWLockExclusive(&g_stateLock);
-            return;
         }
 
+        g_strategy = strategy;
         g_rr.store(0, std::memory_order_relaxed);
         g_initialized = true;
 
@@ -191,30 +286,8 @@ namespace AHM
         if (sizeBytes == 0 || !IsReady())
             return nullptr;
 
-        const uint32_t ticket = g_rr.fetch_add(1, std::memory_order_relaxed);
-        const uint32_t heapId =
-            static_cast<uint32_t>(ticket % static_cast<uint32_t>(g_heapCount));
-
-        HeapEntry& he = g_heaps[heapId];
-
-
-        AcquireSRWLockExclusive(&he.heapLock);
-        void* ptr = HeapAlloc(he.heapHandle, 0, sizeBytes);
-        ReleaseSRWLockExclusive(&he.heapLock);
-
-        if (!ptr)
-            return nullptr;
-
-        // If map insert fails, rollback allocation.
-        if (!g_map.Put(ptr, heapId))
-        {
-            AcquireSRWLockExclusive(&he.heapLock);
-            HeapFree(he.heapHandle, 0, ptr);
-            ReleaseSRWLockExclusive(&he.heapLock);
-            return nullptr;
-        }
-
-        return ptr;
+        return (g_strategy == Strategy::Header) ? MallocHeader(sizeBytes)
+            : MallocMap(sizeBytes);
     }
 
     void Free(void* ptr)
@@ -222,22 +295,7 @@ namespace AHM
         if (!ptr || !IsReady())
             return;
 
-        uint32_t heapId = 0;
-        if (!g_map.Take(ptr, heapId))
-        {
-            return;
-        }
-
-        if (heapId >= g_heapCount)
-        {
-            return;
-        }
-
-        HeapEntry& he = g_heaps[heapId];
-
-
-        AcquireSRWLockExclusive(&he.heapLock);
-        HeapFree(he.heapHandle, 0, ptr);
-        ReleaseSRWLockExclusive(&he.heapLock);
+        if (g_strategy == Strategy::Header) FreeHeader(ptr);
+        else                                FreeMap(ptr);
     }
 }
