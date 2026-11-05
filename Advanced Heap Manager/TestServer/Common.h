@@ -18,6 +18,8 @@
 // === Globalne promenljive (definisane u Server.cpp) ===
 extern std::atomic<bool> g_serverRunning;     // Da li server radi
 extern std::atomic<long long> g_totalMessages; // Broj obradjenih poruka
+extern std::atomic<int>  g_clientsConnected;  // koliko se klijenata povezalo
+extern std::atomic<bool> g_startFlag;         // true = klijenti smiju da krenu sa slanjem
 extern SOCKET g_listenSocket;                 // Socket na kome server slusa
 extern bool g_useAHM;                         // Da li koristimo AHM ili malloc/free
 

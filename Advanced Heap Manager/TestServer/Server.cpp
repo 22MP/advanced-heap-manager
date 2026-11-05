@@ -5,6 +5,8 @@
 
 std::atomic<bool> g_serverRunning = true;
 std::atomic<long long> g_totalMessages = 0;
+std::atomic<int>  g_clientsConnected{ 0 };
+std::atomic<bool> g_startFlag{ false };
 SOCKET g_listenSocket = INVALID_SOCKET;
 bool g_useAHM = true;
 
