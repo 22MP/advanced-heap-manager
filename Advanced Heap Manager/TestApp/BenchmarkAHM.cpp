@@ -63,12 +63,12 @@ static void ahm_worker(size_t bytesPerThread)
 
 
 // ---------- AHM test for N threads ----------
-static BenchmarkResult run_ahm_test_for_threads(int threadCount)
+static BenchmarkResult run_ahm_test_for_threads(int threadCount, AHM::Strategy strategy)
 {
     size_t bytesPerThread = TOTAL_MEMORY / threadCount;
 
     // Initialize AHM
-    AHM::Initialize(HEAP_COUNT, HEAP_SIZE_BYTES);
+    AHM::Initialize(HEAP_COUNT, HEAP_SIZE_BYTES, strategy);
 
     auto start = high_resolution_clock::now();
     {
@@ -90,10 +90,12 @@ static BenchmarkResult run_ahm_test_for_threads(int threadCount)
 }
 
 // ---------- public function ----------
-void run_ahm_benchmark(const vector<int>& threadCounts, vector<BenchmarkResult>& results)
+void run_ahm_benchmark(const vector<int>& threadCounts, vector<BenchmarkResult>& results, AHM::Strategy strategy)
 {
     std::cout << "\n========================================\n";
-    std::cout << "Benchmark - Advanced Heap Manager (AHM)\n";
+    std::cout << "Benchmark - "
+    << (strategy == AHM::Strategy::Header ? "AHM (Header)" : "AHM (Map)")
+    << "\n";
     std::cout << "========================================\n";
 
     for (int tc : threadCounts)
@@ -101,7 +103,7 @@ void run_ahm_benchmark(const vector<int>& threadCounts, vector<BenchmarkResult>&
         std::cout << "Threads: " << tc << " ... ";
         std::cout.flush();
 
-        BenchmarkResult result = run_ahm_test_for_threads(tc);
+        BenchmarkResult result = run_ahm_test_for_threads(tc, strategy);
         results.push_back(result);
 
         std::cout << result.timeSeconds << " s\n";

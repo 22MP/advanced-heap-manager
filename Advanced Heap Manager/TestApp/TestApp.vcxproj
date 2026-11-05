@@ -196,6 +196,9 @@
     <ClInclude Include="BenchmarkMalloc.h" />
     <ClInclude Include="BenchmarkTypes.h" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="plot_results.py" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
