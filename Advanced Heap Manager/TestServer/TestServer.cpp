@@ -7,7 +7,7 @@
 #include <ctime>
 #include <cstdlib>
 
-// Koliko puta se svaka konfiguracija ponovi (u tabelu ide medijana)
+// Number of times each configuration is repeated (the median is used in the table)
 static const int REPETITIONS = 3;
 
 static double median(std::vector<double> v)
@@ -29,7 +29,7 @@ int main()
 
     for (int rep = 1; rep <= REPETITIONS; ++rep)
     {
-        std::cout << "\n##### Ponavljanje " << rep << "/" << REPETITIONS << " #####\n";
+        std::cout << "\n##### Repetition " << rep << "/" << REPETITIONS << " #####\n";
 
         tMalloc.push_back(RunBenchmark(false, clients, messages).elapsedSeconds);
         std::cout << "malloc/free : " << tMalloc.back() << " s\n";
@@ -41,12 +41,12 @@ int main()
         std::cout << "AHM (Header): " << tHeader.back() << " s\n";
     }
 
-    // ---------- Tabela (medijane) ----------
+    // ---------- Results table (medians) ----------
     const double totalMsgs = double(clients) * double(messages);
 
     std::cout << "\n========================================\n";
-    std::cout << "Rezultati (medijana od " << REPETITIONS << " ponavljanja)\n";
-    std::cout << "Klijenata: " << clients << ", poruka po klijentu: " << messages << "\n";
+    std::cout << "Results (median of " << REPETITIONS << " repetitions)\n";
+    std::cout << "Clients: " << clients << ", messages per client: " << messages << "\n";
     std::cout << "========================================\n";
     std::cout << std::left << std::setw(16) << "Mode"
         << std::setw(11) << "Median(s)"
@@ -74,9 +74,9 @@ int main()
         << "\nMap    vs malloc : " << (mm / mp) << "x\n"
         << "Header vs malloc : " << (mm / mh) << "x\n"
         << "Header vs Map    : " << (mp / mh) << "x\n"
-        << "(vrijednost > 1.00 znaci: prvo je brze od drugog)\n";
+        << "(A value > 1.00 means the first method is faster than the second)\n";
 
-    // ---------- CSV (dopisuje se, pa mozes pokrenuti za vise brojeva klijenata) ----------
+    // ---------- CSV export (appends results, allowing multiple client-count runs) ----------
     const char* csvPath = "server_results.csv";
     const bool csvExists = std::ifstream(csvPath).good();
     std::ofstream csv(csvPath, std::ios::app);
@@ -96,7 +96,7 @@ int main()
     dump("ahm_map", tMap);
     dump("ahm_header", tHeader);
     csv.close();
-    std::cout << "\nRezultati dopisani u server_results.csv\n";
+    std::cout << "\nResults appended to server_results.csv\n";
 
     std::cin.ignore(); std::cin.get();
     return 0;

@@ -7,10 +7,10 @@
 #include "BenchmarkMalloc.h"
 #include "BenchmarkAHM.h"
 
-// Koliko puta se svaka konfiguracija ponovi (u tabelu ide medijana)
+// Number of times each configuration is repeated (the median is used in the table)
 static const int REPETITIONS = 3;
 
-using Times = std::vector<std::vector<double>>;   // Times[indeksNiti] = sva mjerenja
+using Times = std::vector<std::vector<double>>;   // Times[threadIndex] = all recorded measurements
 
 static double median(std::vector<double> v)
 {
@@ -39,7 +39,7 @@ int main()
 
     for (int rep = 1; rep <= REPETITIONS; ++rep)
     {
-        std::cout << "\n##### Ponavljanje " << rep << "/" << REPETITIONS << " #####\n";
+        std::cout << "\n##### Repetition " << rep << "/" << REPETITIONS << " #####\n";
 
         std::vector<BenchmarkResult> r;
 
@@ -56,9 +56,9 @@ int main()
         collect(r, tHeader);
     }
 
-    // ---------- Tabela (medijane) ----------
+    // ---------- Results table (medians) ----------
     std::cout << "\n========================================\n";
-    std::cout << "Rezultati (medijana od " << REPETITIONS << " ponavljanja)\n";
+    std::cout << "Results (median of " << REPETITIONS << " repetitions)\n";
     std::cout << "========================================\n";
 
     std::cout << std::left << std::setw(9) << "Threads"
@@ -88,9 +88,9 @@ int main()
             << std::setw(12) << (mp / h)
             << "\n";
     }
-    std::cout << "\n(vrijednosti > 1.00 u zadnje tri kolone znace: brze od onoga u nazivu)\n";
+    std::cout << "\n(Values > 1.00 in the last three columns indicate that the strategy is faster than the one in the column name)\n";
 
-    // ---------- CSV (jedan red = strategija + broj niti) ----------
+    // ---------- CSV export (one row = strategy + thread count) ----------
     std::ofstream csv("results.csv");
     csv << "strategy,threads,median_s,min_s,max_s\n";
     csv << std::fixed << std::setprecision(4);
@@ -110,7 +110,7 @@ int main()
     dump("ahm_header", tHeader);
     csv.close();
 
-    std::cout << "\nRezultati upisani u results.csv\n";
+    std::cout << "\nResults saved to results.csv\n";
     std::cout << "Benchmark completed!\n";
     return 0;
 }

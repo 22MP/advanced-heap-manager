@@ -26,7 +26,7 @@ void RunClient(int id, int numMessages)
     }
 
     LOG("[CLIENT " << id << "] Connected");
-    // javi da si povezan i sacekaj da svi klijenti budu spremni
+    // Notify the server that the client is connected and wait until all clients are ready
     g_clientsConnected++;
     while (!g_startFlag)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));

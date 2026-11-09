@@ -1,8 +1,8 @@
-"""Crta grafike iz results.csv (izlaz TestApp-a).
+"""Generates plots from results.csv (TestApp output).
 
-Pokretanje:  python plot_results.py            (cita results.csv iz trenutnog foldera)
-             python plot_results.py putanja.csv
-Potrebno:    python -m pip install matplotlib
+Usage:  python plot_results.py            (reads results.csv from the current directory)
+        python plot_results.py path.csv
+Requirements:    python -m pip install matplotlib
 """
 import csv
 import sys
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 path = sys.argv[1] if len(sys.argv) > 1 else "results.csv"
 
-# data[strategija][broj_niti] = (medijana, min, max)
+# data[strategy][thread_count] = (median, min, max)
 data = defaultdict(dict)
 with open(path, newline="") as f:
     for row in csv.DictReader(f):
@@ -31,7 +31,7 @@ labels = {
     "ahm_map": "AHM (AllocationMap)",
     "ahm_header": "AHM (Header)",
 }
-# iste boje na oba grafika
+# Use the same colors for both plots
 colors = {
     "malloc": "tab:blue",
     "ahm_map": "tab:orange",
@@ -40,7 +40,7 @@ colors = {
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
 
-# ---- 1) Vrijeme po broju niti (manje je bolje) ----
+# ---- 1) Execution time by thread count (lower is better) ----
 width = 0.27
 for k, name in enumerate(order):
     med = [data[name][t][0] for t in threads]
@@ -52,14 +52,14 @@ for k, name in enumerate(order):
 
 ax1.set_xticks(x)
 ax1.set_xticklabels(threads)
-ax1.set_xlabel("Broj niti")
-ax1.set_ylabel("Vrijeme (s) - manje je bolje")
-ax1.set_title("Alokacija i dealokacija 4 GB (medijana, min-max)")
+ax1.set_xlabel("Number of threads")
+ax1.set_ylabel("Execution time (s) - lower is better")
+ax1.set_title("Allocation and deallocation of 4 GB (median, min-max)")
 ax1.legend()
 ax1.grid(axis="y", alpha=0.3)
 
-# ---- 2) Relativno vrijeme u odnosu na malloc (malloc = 1.0) ----
-# vrijednost > 1.0 znaci BRZE od malloc-a, < 1.0 znaci sporije
+# ---- 2) Relative performance compared to malloc (malloc = 1.0) ----
+# Values > 1.0 indicate FASTER performance than malloc, while values < 1.0 indicate slower performance
 highest = 1.0
 for name in order:
     if name == "malloc":
@@ -70,15 +70,15 @@ for name in order:
     ax2.plot(x, rel, marker="o", color=colors[name], label=labels[name],
              linestyle="--" if name == "malloc" else "-")
 
-ax2.set_ylim(0, max(1.5, highest * 1.1))   # osa od nule: sitne razlike ne djeluju velike
+ax2.set_ylim(0, max(1.5, highest * 1.1))   # Start the axis at zero so small differences are not exaggerated
 ax2.set_xticks(x)
 ax2.set_xticklabels(threads)
-ax2.set_xlabel("Broj niti")
-ax2.set_ylabel("Brzina u odnosu na malloc (malloc = 1.0), vece je bolje")
-ax2.set_title("Relativne performanse (osnova: malloc/free)")
+ax2.set_xlabel("Number of threads")
+ax2.set_ylabel("Performance relative to malloc (malloc = 1.0), higher is better")
+ax2.set_title("Relative performance (baseline: malloc/free)")
 ax2.legend()
 ax2.grid(alpha=0.3)
 
 plt.tight_layout()
 plt.savefig("results.png", dpi=150)
-print("Sacuvano: results.png")
+print("Saved: results.png")

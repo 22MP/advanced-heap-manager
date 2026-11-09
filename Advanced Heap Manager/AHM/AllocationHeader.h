@@ -8,11 +8,10 @@ namespace AHM
 
     struct alignas(16) AllocationHeader
     {
-        uint32_t heapId;   // iz kog heap-a je blok
-        uint32_t magic;    // AHM_MAGIC dok je blok živ
-        // alignas(16) dopuni strukturu na 16 bajtova
+        uint32_t heapId;   // ID of the heap the block belongs to
+        uint32_t magic;    // AHM_MAGIC while the block is valid
     };
 
     static_assert(sizeof(AllocationHeader) == 16,
-        "Header mora biti 16B da korisnicki pointer ostane poravnat na 16");
+        "Header must be 16B to keep the user pointer aligned to 16 bytes");
 }

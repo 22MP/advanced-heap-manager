@@ -3,11 +3,11 @@
 
 struct BenchmarkResult
 {
-    double elapsedSeconds;     // Ukupno vreme testa
-    int totalMessages;         // Ukupan broj poruka
+    double elapsedSeconds;     // Total test execution time
+    int totalMessages;         // Total number of messages
     bool useAHM;               // true = AHM, false = malloc/free
-    AHM::Strategy strategy;    // vazi samo ako je useAHM == true
+    AHM::Strategy strategy;    // Applies only if useAHM == true
 };
 
-// Pokrece benchmark test (server + vise klijenata)
+// Runs the benchmark test (server + multiple clients)
 BenchmarkResult RunBenchmark(bool useAHM, int clientCount, int messagesPerClient, AHM::Strategy strategy = AHM::Strategy::Map);

@@ -11,8 +11,8 @@ using std::thread;
 using std::chrono::high_resolution_clock;
 using std::chrono::duration;
 
-const size_t TOTAL_MEMORY = 4ULL * 1024 * 1024 * 1024; // 4 GB ukupno
-const size_t BLOCK_SIZE = 64 * 1024;                    
+const size_t TOTAL_MEMORY = 4ULL * 1024 * 1024 * 1024; // 4 GB total
+const size_t BLOCK_SIZE = 64 * 1024;
 
 // ---------- malloc worker ----------
 static void malloc_worker(size_t bytesPerThread)
@@ -49,6 +49,7 @@ static void malloc_worker(size_t bytesPerThread)
         }
     }
 
+    // Deallocate all allocated memory blocks
     for (void* p : ptrs)
         free(p);
 }
@@ -74,7 +75,7 @@ static BenchmarkResult run_malloc_test_for_threads(int threadCount)
     return { threadCount, timeSeconds };
 }
 
-// ---------- public function ----------
+// ---------- Public function ----------
 void run_malloc_benchmark(const vector<int>& threadCounts, vector<BenchmarkResult>& results)
 {
     std::cout << "\n========================================\n";

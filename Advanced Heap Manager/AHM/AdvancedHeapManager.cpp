@@ -22,10 +22,10 @@ namespace AHM
         // Pointer -> heapId tracking
         AllocationMap g_map;
 
-		// Allocation strategy(map or header)
+        // Allocation strategy (map or header)
         Strategy g_strategy = Strategy::Map;
 
-        // Init/Shutdown guard 
+        // Init/Shutdown guard
         SRWLOCK   g_stateLock;
         INIT_ONCE g_stateInitOnce = INIT_ONCE_STATIC_INIT;
         bool      g_initialized = false;
@@ -60,7 +60,7 @@ namespace AHM
             if (!g_initialized)
                 return;
 
-            // Destroy map 
+            // Destroy the allocation map
             g_map.Destroy();
 
             // Destroy heaps
@@ -84,7 +84,8 @@ namespace AHM
             g_initialized = false;
         }
     }
-    // ---------- Strategija 1: AllocationMap (originalno) ----------
+
+    // ---------- Strategy 1: AllocationMap ----------
     static void* MallocMap(size_t sizeBytes)
     {
         const uint32_t ticket = g_rr.fetch_add(1, std::memory_order_relaxed);
@@ -125,10 +126,10 @@ namespace AHM
         ReleaseSRWLockExclusive(&he.heapLock);
     }
 
-    // ---------- Strategija 2: AllocationHeader ----------
+    // ---------- Strategy 2: AllocationHeader ----------
     static void* MallocHeader(size_t sizeBytes)
     {
-        // zaštita od overflow-a pri sabiranju
+        // Protect against integer overflow when calculating the total allocation size
         if (sizeBytes > SIZE_MAX - sizeof(AllocationHeader))
             return nullptr;
         const size_t totalSize = sizeof(AllocationHeader) + sizeBytes;
@@ -150,7 +151,7 @@ namespace AHM
         hdr->heapId = heapId;
         hdr->magic = AHM_MAGIC;
 
-        return hdr + 1;    // korisnik dobija adresu IZA headera
+        return hdr + 1;    // The user receives the address immediately after the header
     }
 
     static void FreeHeader(void* ptr)
@@ -158,18 +159,18 @@ namespace AHM
         AllocationHeader* hdr = static_cast<AllocationHeader*>(ptr) - 1;
 
         if (hdr->magic != AHM_MAGIC)
-            return;                       // nije naš blok ili je već oslobođen
+            return;                       // Not our block or it has already been freed
 
         const uint32_t heapId = hdr->heapId;
         if (heapId >= g_heapCount)
             return;
 
-        hdr->magic = 0;                   // da drugi Free() uhvati provjera
+        hdr->magic = 0;                   // Mark the block as freed to detect subsequent Free() calls
 
         HeapEntry& he = g_heaps[heapId];
 
         AcquireSRWLockExclusive(&he.heapLock);
-        HeapFree(he.heapHandle, 0, hdr);  // oslobađa POČETAK bloka (hdr), ne ptr
+        HeapFree(he.heapHandle, 0, hdr);  // Free the beginning of the block (hdr), not ptr
         ReleaseSRWLockExclusive(&he.heapLock);
     }
 
@@ -178,7 +179,7 @@ namespace AHM
         EnsureStateLockInit();
         AcquireSRWLockExclusive(&g_stateLock);
 
-        // Hard reset if already initialized
+        // Perform a hard reset if already initialized
         if (g_initialized)
         {
             Shutdown_NoLock();
@@ -213,12 +214,12 @@ namespace AHM
         {
             InitializeSRWLock(&g_heaps[i].heapLock);
 
-            // initial size = heapSizeBytes, max size = 0 (grow as needed)
+            // Initial size = heapSizeBytes, maximum size = 0 (grows as needed)
             g_heaps[i].heapHandle = HeapCreate(HEAP_NO_SERIALIZE, heapSizeBytes, 0);
 
             if (!g_heaps[i].heapHandle)
             {
-                // Roll back heaps already created
+                // Roll back all heaps that were successfully created
                 for (size_t j = 0; j < i; ++j)
                 {
                     if (g_heaps[j].heapHandle)
@@ -237,7 +238,7 @@ namespace AHM
             }
         }
 
-        // Mapa se pravi samo u Map strategiji
+        // Create the allocation map only when using the Map strategy
         if (strategy == Strategy::Map)
         {
             size_t desired = heapCount * 1024;

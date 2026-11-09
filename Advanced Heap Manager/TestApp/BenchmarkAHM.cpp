@@ -11,8 +11,8 @@ using std::thread;
 using std::chrono::high_resolution_clock;
 using std::chrono::duration;
 
-const size_t TOTAL_MEMORY = 4ULL * 1024 * 1024 * 1024; // 4 GB ukupno
-const size_t BLOCK_SIZE = 64 * 1024;                    
+const size_t TOTAL_MEMORY = 4ULL * 1024 * 1024 * 1024; // 4 GB total
+const size_t BLOCK_SIZE = 64 * 1024;
 const int HEAP_COUNT = 8;
 const size_t HEAP_SIZE_BYTES = TOTAL_MEMORY / HEAP_COUNT;
 
@@ -21,19 +21,19 @@ static void ahm_worker(size_t bytesPerThread)
 {
     constexpr size_t PAGE_SIZE = 4096;
     size_t allocations = bytesPerThread / BLOCK_SIZE;
-    size_t remainder = bytesPerThread % BLOCK_SIZE; // ostatak koji ne stane u pun blok
+    size_t remainder = bytesPerThread % BLOCK_SIZE; // Remaining bytes that do not fit into a full block
 
     std::vector<void*> ptrs;
-    ptrs.reserve(allocations + (remainder ? 1 : 0)); // rezerviši dodatno mesto za ostatak
+    ptrs.reserve(allocations + (remainder ? 1 : 0)); // Reserve an additional slot for the remainder
 
-    // Alokacija punih blokova
+    // Allocate full-size blocks
     for (size_t i = 0; i < allocations; i++)
     {
         void* p = AHM::Malloc(BLOCK_SIZE);
         if (!p)
             break;
 
-        // Postavlja 0 u svaku stranicu memorije kako ne bi doslo do lazy alokacije
+        // Write 0 to each memory page to prevent lazy allocation
         char* c = static_cast<char*>(p);
         for (size_t off = 0; off < BLOCK_SIZE; off += PAGE_SIZE)
             c[off] = 0;
@@ -41,7 +41,7 @@ static void ahm_worker(size_t bytesPerThread)
         ptrs.push_back(p);
     }
 
-    // Alokacija ostatka ako postoji
+    // Allocate the remaining bytes, if any
     if (remainder > 0)
     {
         void* p = AHM::Malloc(remainder);
@@ -56,7 +56,7 @@ static void ahm_worker(size_t bytesPerThread)
 
     }
 
-    // Dealokacija
+    // Deallocate memory
     for (void* p : ptrs)
         AHM::Free(p);
 }
@@ -83,19 +83,19 @@ static BenchmarkResult run_ahm_test_for_threads(int threadCount, AHM::Strategy s
 
     double timeSeconds = duration<double>(end - start).count();
 
-    // Shutdown AHM
+    // Shut down AHM
     AHM::Shutdown();
 
     return { threadCount, timeSeconds };
 }
 
-// ---------- public function ----------
+// ---------- Public function ----------
 void run_ahm_benchmark(const vector<int>& threadCounts, vector<BenchmarkResult>& results, AHM::Strategy strategy)
 {
     std::cout << "\n========================================\n";
     std::cout << "Benchmark - "
-    << (strategy == AHM::Strategy::Header ? "AHM (Header)" : "AHM (Map)")
-    << "\n";
+        << (strategy == AHM::Strategy::Header ? "AHM (Header)" : "AHM (Map)")
+        << "\n";
     std::cout << "========================================\n";
 
     for (int tc : threadCounts)

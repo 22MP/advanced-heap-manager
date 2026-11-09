@@ -30,7 +30,7 @@ BenchmarkResult RunBenchmark(bool useAHM, int clientCount, int messagesPerClient
     for (int i = 0; i < clientCount; ++i)
         clients.emplace_back(RunClient, i + 1, messagesPerClient);
 
-    // Sacekaj da se svi klijenti povezu (najvise 10 s), pa ih pusti istovremeno
+    // Wait for all clients to connect (up to 10 seconds), then allow them to start simultaneously
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (g_clientsConnected < clientCount &&
         std::chrono::steady_clock::now() < deadline)
@@ -39,10 +39,10 @@ BenchmarkResult RunBenchmark(bool useAHM, int clientCount, int messagesPerClient
     }
 
     if (g_clientsConnected < clientCount)
-        std::cout << "UPOZORENJE: povezalo se samo " << g_clientsConnected
-        << " od " << clientCount << " klijenata\n";
+        std::cout << "WARNING: only " << g_clientsConnected
+        << " out of " << clientCount << " clients connected\n";
 
-    // Merenje pocinje tek kad su svi povezani
+    // Start measuring only after all clients have connected
     auto start = std::chrono::high_resolution_clock::now();
     g_startFlag = true;
 
@@ -55,11 +55,11 @@ BenchmarkResult RunBenchmark(bool useAHM, int clientCount, int messagesPerClient
     closesocket(g_listenSocket);
     serverThread.join();
 
-    // Provjera: ako je obradjeno mnogo manje poruka nego sto treba, mjerenje nije pouzdano
+    // Check: if significantly fewer messages were processed than expected, the measurement is unreliable
     if (g_totalMessages < static_cast<long long>(result.totalMessages * 0.9))
-        std::cout << "UPOZORENJE: obradjeno samo " << g_totalMessages
-        << " od " << result.totalMessages
-        << " poruka - ovo mjerenje nije pouzdano\n";
+        std::cout << "WARNING: only " << g_totalMessages
+        << " out of " << result.totalMessages
+        << " messages were processed - this measurement is unreliable\n";
 
     if (useAHM) AHM::Shutdown();
 
