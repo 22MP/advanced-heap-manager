@@ -78,7 +78,7 @@ out/
 # Optional: test artifacts
 # =========================
 
-*.csv
+#*.csv
 *.txt
 *.bin
 
