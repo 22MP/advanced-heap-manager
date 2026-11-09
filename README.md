@@ -29,6 +29,7 @@ Advanced Heap Manager/
   TestApp/        benchmark: allocate and free 4 GB from 1, 2, 5, 10 and 50 threads
   TestServer/     benchmark: multi-client server on loopback sockets
 docs/             project specification and documentation (PDF, in Serbian)
+results/          benchmark results: CSV data and charts (shown in the Results section)
 ```
 
 ## Building
@@ -66,11 +67,54 @@ For meaningful numbers, run a **Release x64** build **without a debugger attache
 - Clients send messages of random size (64 B to 4 KB) and the server answers with random-size replies; both sides allocate their buffers with AHM or `malloc`.
 - All clients connect first and are then released at the same moment; the timer starts at the release, so connection setup is not part of the measurement.
 - The program asks for the number of clients and messages per client, prints a table (median, min, max, throughput) and appends the results to `server_results.csv`, so several client counts can be collected in one file.
-- If a run prints a `UPOZORENJE` (warning) line, that run did not process the expected number of messages and should be repeated.
+- If a run prints a warning (for example that fewer clients connected, or fewer messages were processed, than expected), that run is not reliable and should be repeated.
 
 ## Results
 
-_Results to be added._
+All measurements: Intel Core Ultra 7 258V (8 cores, 8 threads), 32 GB RAM, Release x64 build without a debugger, median of 3 runs.
+
+### TestApp (4 GB in 64 KB blocks, 8 AHM heaps)
+
+Min-max ranges are in [`results/results.csv`](results/results.csv).
+
+![TestApp results](results/results.png)
+
+| Threads | malloc/free (s) | AHM Map (s) | AHM Header (s) | Map vs malloc | Header vs malloc |
+|---:|---:|---:|---:|---:|---:|
+| 1  | 3.624  | 4.785 | 5.900 | 0.76x  | 0.61x  |
+| 2  | 3.502  | 2.147 | 2.706 | 1.63x  | 1.29x  |
+| 5  | 4.908  | 1.336 | 1.293 | 3.67x  | 3.80x  |
+| 10 | 7.003  | 1.140 | 1.100 | 6.14x  | 6.37x  |
+| 50 | 14.302 | 0.393 | 0.342 | 36.43x | 41.88x |
+
+(Ratios above 1.00x mean AHM is faster than `malloc`/`free`.)
+
+- **Contention is visible.** The work is the same in every row, yet `malloc`/`free` gets slower as threads are added (3.6 s to 14.3 s), while AHM gets faster (to 0.39 s and 0.34 s with 50 threads).
+- **From 5 threads up, AHM is clearly faster:** about 3.7x with 5 threads, 6x with 10 and 36-42x with 50. At these thread counts even the slowest AHM run beats the fastest `malloc` run, so the result is not noise.
+- **With 1-2 threads there is no demonstrated benefit.** `malloc` runs varied from 1.3 s to 4.8 s and got slower with every repetition, so the comparison is inconclusive there.
+- **Header vs Map:** Header was about 13% faster with 50 threads, showed no measurable difference with 5 and 10 threads, and was about 25% slower with 1-2 threads.
+
+### TestServer (loopback TCP, 5000 messages per client, 64 B - 4 KB)
+
+Min-max ranges are in [`results/server_results.csv`](results/server_results.csv). Each cell shows the time and, in brackets, the throughput in messages per second.
+
+| Clients | malloc/free | AHM Map | AHM Header | Map vs malloc | Header vs malloc |
+|---:|---:|---:|---:|---:|---:|
+| 1  | 0.191 s (26,224) | 0.199 s (25,102) | 0.204 s (24,496) | 0.96x | 0.93x |
+| 10 | 0.653 s (76,517) | 0.649 s (77,074) | 0.676 s (74,018) | 1.01x | 0.97x |
+| 50 | 2.753 s (90,802) | 2.840 s (88,042) | 2.861 s (87,387) | 0.97x | 0.96x |
+
+- **No measurable advantage for AHM in this test.** With 1 and 10 clients the min-max ranges of all three overlap and no method wins in every run, so the differences are run-to-run variation. With 50 clients `malloc` was marginally faster (about 3%) in all three runs. Header vs Map stayed within 4% in every row.
+- **Throughput saturates:** about 26,000 messages/s with one client, 74,000-77,000 with 10 and 87,000-91,000 with 50.
+- **Possible reasons (not profiled).** One message exchange takes only about 38 microseconds with a single client and involves four small allocations plus several loopback socket calls, so allocation is a small part of the total. In addition, Microsoft documents that the low-fragmentation heap, which the default process heap uses for small blocks, cannot be enabled for heaps created with `HEAP_NO_SERIALIZE` (as AHM's are), so the default allocator may already scale well for blocks of this size.
+
+### Overall conclusion
+
+AHM removes the heap-contention bottleneck when allocation itself dominates the work: in TestApp, with 5 or more threads, it is several times to dozens of times faster than the default `malloc`/`free` and keeps scaling as threads are added. With 1-2 threads it brings no advantage. In the TestServer scenario, where each message is mostly socket communication and the blocks are small, AHM and `malloc`/`free` performed practically the same, so no benefit can be claimed there.
+
+The header-based strategy adds a small gain only under the highest contention (50 threads in TestApp), is indistinguishable from the map-based one in most other cases, and is slower with 1-2 threads. Its other benefits (no hash table, no segment locks, simpler code) are not visible in these timings.
+
+Limitations: 3 repetitions per configuration and a single machine.
 
 ## Limitations
 
